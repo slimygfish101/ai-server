@@ -4,7 +4,7 @@ param(
   [Parameter(Mandatory)] [string] $RepoRaw,
   [string] $DeskUser = 'ClaudeDesk',
   [string] $PasswordParam = '/claude-pc/desk-password',
-  [string] $Region = 'us-east-1'
+  [string] $Region = 'us-east-2'
 )
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'

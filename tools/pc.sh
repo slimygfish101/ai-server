@@ -9,7 +9,7 @@
 #   tools/pc.sh setup-status
 #   tools/pc.sh money
 set -euo pipefail
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" AWS_PAGER=""
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-2}" AWS_PAGER=""
 
 if ! command -v aws >/dev/null; then
   pip install --quiet awscli >/dev/null 2>&1 || pip install --quiet --break-system-packages awscli >/dev/null

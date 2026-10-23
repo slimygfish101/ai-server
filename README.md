@@ -7,7 +7,7 @@ You can look at and use the same screen from your iPad or PC whenever you want.
 
 | Piece | What it does |
 |---|---|
-| **The computer** | Windows Server 2025 (looks like Windows 11), size `m7i-flex.large` (2 processors, 8 GB memory, 80 GB disk) in Amazon's Virginia location. Set up so Claude's Cowork feature can control the whole screen. |
+| **The computer** | Windows Server 2025 (looks like Windows 11), size `m7i-flex.large` (2 processors, 8 GB memory, 80 GB disk) in Amazon's Ohio location (where your Amazon project lives). Set up so Claude's Cowork feature can control the whole screen. |
 | **On/off** | Claude (in your Claude app chats) can turn it on and off. It also **switches itself off after 60 minutes with no activity**, with a 5-minute warning first. If that ever fails, a backup on Amazon's side switches it off after 2 quiet hours. |
 | **Software** | Chrome, the Claude in Chrome extension, and the Claude desktop app (opens by itself at start-up). |
 | **Your access** | Connect with Microsoft's free **Windows App**. You land on the exact screen Claude is using. |
@@ -15,7 +15,7 @@ You can look at and use the same screen from your iPad or PC whenever you want.
 | **Rules for Claude** | [`windows/CLAUDE-RULES.md`](windows/CLAUDE-RULES.md): do it yourself first, hand off to the helper only when blocked, check the helper's work, keep passwords out of chats, call you for anything only a human can do. |
 | **Money alerts** | Emails when about $50 of credit is left (and again at $20), the moment any real charge appears, at $8 of real charges, and when Amazon predicts you'll pass $10. |
 
-## Cost (Virginia prices, October 2026)
+## Cost (Ohio prices, October 2026)
 
 - **About 18¢ per hour while it's on** (includes the Windows licence).
 - **About $10 a month even while it's off**: about $6.40 for the 80 GB disk, plus about $3.65 for the fixed internet address.
@@ -32,7 +32,7 @@ On Amazon's **Free plan** your card is never charged; if credits run out, Amazon
 ## Setup steps
 
 1. **You:** create the Amazon account (Free plan).
-2. **You:** open **CloudShell** (the `>_` icon at the top of the Amazon website, with the location set to "N. Virginia"), then paste:
+2. **You:** open **CloudShell** (the `>_` icon at the top of the Amazon website, with the location set to "Ohio"), then paste:
    ```
    curl -fsSL https://raw.githubusercontent.com/slimygfish101/ai-server/refs/heads/claude/aws-cloud-computer-setup-jin2ax/setup/aws-setup.sh -o aws-setup.sh
    bash aws-setup.sh YOUR-EMAIL 100

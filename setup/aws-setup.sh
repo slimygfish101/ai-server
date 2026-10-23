@@ -6,11 +6,11 @@
 #   bash aws-setup.sh YOUR-EMAIL@example.com [CREDIT_DOLLARS]
 #
 # It is safe to run again: anything that already exists is left alone.
-set -euo pipefail
+set -Eeuo pipefail
 
 EMAIL="${1:-}"
 CREDITS="${2:-100}"            # how many dollars of Amazon credits you have
-REGION="us-east-1"             # N. Virginia, closest to Brooklyn
+REGION="${REGION:-us-east-2}"  # Ohio: where your Amazon project lives
 INSTANCE_TYPE="${INSTANCE_TYPE:-m7i-flex.large}"
 DISK_GB=80
 NAME="ClaudePC"
@@ -22,6 +22,7 @@ export AWS_DEFAULT_REGION="$REGION" AWS_REGION="$REGION" AWS_PAGER=""
 
 say()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1;31mSTOPPED: %s\033[0m\n' "$*"; exit 1; }
+trap 'printf "\n\033[1;31mSTOPPED: Amazon refused a step (see the message above). Copy that message to Claude. It is safe to run this again later.\033[0m\n"' ERR
 
 [[ "$EMAIL" == *@*.* ]] || fail "Put your email after the command, e.g.: bash aws-setup.sh you@gmail.com"
 [[ "$CREDITS" =~ ^[0-9]+$ ]] && (( CREDITS > 50 )) || fail "Credits must be a whole dollar amount above 50."
