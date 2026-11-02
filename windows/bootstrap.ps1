@@ -1,10 +1,13 @@
-# First-boot setup for ClaudePC. Runs once as SYSTEM from the EC2 user data.
+# First-boot setup for ClaudePC. Runs once as SYSTEM: from the EC2 user data on Amazon,
+# or from the Custom Script Extension on Azure (which passes -Cloud azure -Password).
 # Log: C:\ClaudePC\logs\bootstrap.log   Result: C:\ClaudePC\setup-status.txt
 param(
   [Parameter(Mandatory)] [string] $RepoRaw,
   [string] $DeskUser = 'ClaudeDesk',
   [string] $PasswordParam = '/claude-pc/desk-password',
-  [string] $Region = 'us-east-2'
+  [string] $Region = 'us-east-2',
+  [ValidateSet('aws', 'azure')] [string] $Cloud = 'aws',
+  [string] $Password
 )
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -22,12 +25,17 @@ foreach ($f in 'idle-watch.ps1', 'on-logon.ps1', 'hand-back.ps1', 'set-helper.ps
 }
 Copy-Item "$Root\CLAUDE-RULES.md" "$Root\work\CLAUDE.md" -Force -ErrorAction SilentlyContinue
 if (-not (Test-Path "$Root\helper.txt")) { Set-Content "$Root\helper.txt" 'muse' }
+Set-Content "$Root\cloud.txt" $Cloud
 
 Step 'Desk user account'
-try {
-  Import-Module AWSPowerShell -ErrorAction SilentlyContinue
-  $pw = (Get-SSMParameter -Name $PasswordParam -WithDecryption $true -Region $Region).Value
-} catch { Problem "Could not read the desk password: $_" }
+if ($Password) {
+  $pw = $Password
+} else {
+  try {
+    Import-Module AWSPowerShell -ErrorAction SilentlyContinue
+    $pw = (Get-SSMParameter -Name $PasswordParam -WithDecryption $true -Region $Region).Value
+  } catch { Problem "Could not read the desk password: $_" }
+}
 if ($pw) {
   $secure = ConvertTo-SecureString $pw -AsPlainText -Force
   if (-not (Get-LocalUser -Name $DeskUser -ErrorAction SilentlyContinue)) {
@@ -102,7 +110,7 @@ if ($pw) {
     & "$Root\downloads\AutoLogon\Autologon64.exe" /accepteula $DeskUser $env:COMPUTERNAME $pw | Out-Null
   } catch { Problem "Autologon: $_" }
 }
-Remove-Variable pw, secure -ErrorAction SilentlyContinue
+Remove-Variable pw, secure, Password -ErrorAction SilentlyContinue
 
 Step 'Start-up task (Claude app + 60-minute idle timer)'
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `

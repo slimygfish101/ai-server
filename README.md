@@ -45,6 +45,23 @@ On Amazon's **Free plan** your card is never charged; if credits run out, Amazon
 5. **You:** connect once with the Windows App to sign in to Claude, Chrome, Meta Muse and Grok yourself.
 6. **Claude:** checks the setup, tests Cowork, and fixes anything that didn't work.
 
+## Running on Microsoft Azure instead (current plan)
+
+Amazon's account verification was stuck, so ClaudePC runs on Azure for now.
+
+- **Free credit:** $200 for the first 30 days. After that, move to Amazon (see below).
+- **Your card can't be charged** unless you click "Upgrade" in Azure; when the credit runs out, Azure just switches things off.
+- **Cost against the credit:** about 19¢ per hour while it's on, plus about $13 a month for the disk and fixed address.
+- **Setup:** open Cloud Shell in portal.azure.com (the `>_` icon, choose Bash) and paste:
+  ```
+  curl -fsSL https://raw.githubusercontent.com/slimygfish101/ai-server/refs/heads/claude/aws-cloud-computer-setup-jin2ax/setup/azure-setup.sh -o azure-setup.sh
+  bash azure-setup.sh YOUR-EMAIL
+  ```
+- **Auto-off:** same 60-minute idle timer (on Azure it releases the computer so billing stops), plus a nightly switch-off at 2-3 AM as a safety net.
+- Claude's remote control for Azure: `tools/azpc.py`.
+
+**Moving to Amazon after the 30 days:** nothing gets copied over. We run the Amazon setup to build a fresh computer, you sign in to Claude, Chrome, Meta Muse and Grok again, and copy any files you want to keep from `C:\ClaudePC\work`. Then the Azure computer gets deleted.
+
 ## Files
 
 - `setup/aws-setup.sh`: one-time Amazon setup (run in CloudShell). Safe to run again.
@@ -52,6 +69,7 @@ On Amazon's **Free plan** your card is never charged; if credits run out, Amazon
 - `windows/idle-watch.ps1`: the 60-minute auto-off timer.
 - `windows/hand-back.ps1`, `windows/set-helper.ps1`, `windows/on-logon.ps1`: desktop icons and the start-up routine.
 - `tools/pc.sh`: what Claude uses from chat to turn the computer on/off and check on it.
+- `setup/azure-setup.sh`, `tools/azpc.py`: the same for Azure.
 
 ## Good to know
 

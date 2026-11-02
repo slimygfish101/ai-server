@@ -20,6 +20,15 @@ public static class IdleClock {
 }
 '@
 
+function Stop-AzureSelf {
+  $imds = @{ Metadata = 'true' }
+  $token = (Invoke-RestMethod -Headers $imds -Uri 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/').access_token
+  $vm = Invoke-RestMethod -Headers $imds -Uri 'http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01'
+  $uri = "https://management.azure.com/subscriptions/$($vm.subscriptionId)/resourceGroups/$($vm.resourceGroupName)" +
+         "/providers/Microsoft.Compute/virtualMachines/$($vm.name)/deallocate?api-version=2024-07-01"
+  Invoke-RestMethod -Method Post -Headers @{ Authorization = "Bearer $token" } -Uri $uri | Out-Null
+}
+
 $warned = $false
 while ($true) {
   Start-Sleep -Seconds 60
@@ -41,6 +50,12 @@ while ($true) {
   if ($cpu -ge $BusyCpuPercent) { continue }
 
   Add-Content $log "$(Get-Date -Format s) idle $([int]$idle) min, cpu $([int]$cpu)% -> switching off"
+  if ((Get-Content "$Root\cloud.txt" -ErrorAction SilentlyContinue) -eq 'azure') {
+    # On Azure, shutting Windows down keeps the computer reserved and billed;
+    # only a "deallocate" request to Azure stops the charges.
+    try { Stop-AzureSelf; break }
+    catch { Add-Content $log "$(Get-Date -Format s) Azure deallocate failed: $_" }
+  }
   shutdown.exe /s /t 30 /c "ClaudePC: unused for $IdleMinutes minutes, switching off to save money"
   break
 }
