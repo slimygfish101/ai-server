@@ -2,6 +2,7 @@
 # 60 minutes with no mouse/keyboard activity from you or Claude, as long as the
 # computer isn't busy. To keep it on during a long hands-off job, save any text
 # into C:\ClaudePC\stay-on.txt (counts for 3 hours from when it was last saved).
+# For 24/7 mode, create C:\ClaudePC\always-on.txt (delete it to go back).
 param([int] $IdleMinutes = 60, [int] $WarnMinutes = 55, [int] $BusyCpuPercent = 25)
 $Root = 'C:\ClaudePC'
 $log = "$Root\logs\idle-watch.log"
@@ -34,6 +35,8 @@ while ($true) {
   Start-Sleep -Seconds 60
   $idle = [IdleClock]::Minutes()
   if ($idle -lt $WarnMinutes) { $warned = $false; continue }
+
+  if (Test-Path "$Root\always-on.txt") { continue }   # 24/7 mode: never switch off
 
   $stayOn = Get-Item "$Root\stay-on.txt" -ErrorAction SilentlyContinue
   if ($stayOn -and $stayOn.LastWriteTime -gt (Get-Date).AddHours(-3)) { continue }
