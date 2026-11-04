@@ -234,6 +234,9 @@ if __name__ == "__main__":
     check("Claude at its limit: ChatGPT answers, still sandboxed",
           any(x[1].startswith("(ChatGPT answering") and "codex says: LIMIT test" in x[1] and "sandbox=workspace-write" in x[1] for x in s),
           [x[1] for x in s])
+    SENT.clear(); BOX.add(gv_mail(MY, "chatgpt: capital of France?")); s = wait_sent(2)
+    check("'chatgpt ...' goes straight to ChatGPT",
+          any(x[1].startswith("(ChatGPT)") and "codex says: capital of France?" in x[1] for x in s), [x[1] for x in s])
     check("limit notice detection",
           sms_relay.looks_like_limit("Claude AI usage limit reached|1793900000")
           and sms_relay.looks_like_limit("You've hit your weekly limit · resets Sun 4am")

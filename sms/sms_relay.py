@@ -45,7 +45,8 @@ HELP_TEXT = (
     "new = start a fresh conversation\n"
     "stop = cancel the current job\n"
     "status = is it busy?\n"
-    "more = rest of a long answer"
+    "more = rest of a long answer\n"
+    "chatgpt <question> = ask ChatGPT instead of Claude"
 )
 
 
@@ -361,6 +362,14 @@ class Worker(threading.Thread):
                 self.busy, self.proc = False, None
 
     def handle(self, job):
+        if job.get("codex"):  # texted "chatgpt ...": ask ChatGPT directly
+            answer, err = self.ask_codex(job)
+            if self.cancelled:
+                return
+            if err:
+                answer = f"ChatGPT couldn't finish: {err[:300]}"
+            self.sender.text(job["reply_to"], "(ChatGPT)\n" + answer if not err else answer, job["subject"])
+            return
         answer, err = self.ask_claude(job, resume=True)
         if err == "resume_failed":
             log.info("resume failed, starting a fresh conversation")
@@ -643,7 +652,11 @@ class Relay:
             if self.cfg["ack"]:
                 ack = "Got it, working on it." if not ahead else f"Got it. Starting after {ahead} job(s) ahead of it."
                 threading.Thread(target=self.sender._send_one, args=(to, ack, subj), daemon=True).start()
-            self.worker.jobs.put({"text": text, "reply_to": to, "subject": subj})
+            job = {"text": text, "reply_to": to, "subject": subj}
+            m = re.match(r"\s*(chatgpt|gpt)\b[\s:,-]*", text, re.I)
+            if m and self.cfg["fallback_codex"]:
+                job.update(text=text[m.end():].strip() or "hello", codex=True)
+            self.worker.jobs.put(job)
 
     def run_forever(self):
         backoff = 5
