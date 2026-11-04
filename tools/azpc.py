@@ -44,9 +44,17 @@ def _call(method, url, body=None, headers=None, form=False):
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    with urllib.request.urlopen(req, context=CTX, timeout=120) as resp:
-        text = resp.read().decode()
-        return json.loads(text) if text else {}
+    for attempt in range(4):  # the network path sometimes drops a connection; retry those
+        try:
+            with urllib.request.urlopen(req, context=CTX, timeout=120) as resp:
+                text = resp.read().decode()
+                return json.loads(text) if text else {}
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            if attempt == 3:
+                raise
+            time.sleep(2 ** (attempt + 1))
 
 
 def _token():
