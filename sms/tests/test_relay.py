@@ -96,6 +96,10 @@ if prompt.startswith('LONG'):
     out = ' '.join(f'word{{i}}' for i in range(900))
 elif prompt.startswith('SLOW'):
     time.sleep(30); out = 'slow done'
+elif prompt.rstrip().endswith('HARD claude') and '--model' not in args:
+    out = '[[OPUS]]'
+elif prompt.rstrip().endswith('HARD claude'):
+    out = 'answered by ' + args[args.index('--model')+1]
 elif prompt.startswith('LIMIT'):
     print(json.dumps({{"type":"result","subtype":"success","is_error":True,"result":"Claude AI usage limit reached. Resets Sun 4am","session_id":"sess-1"}}))
     sys.exit(0)
@@ -117,7 +121,13 @@ else:
     sid = None
     print(json.dumps({"type": "thread.started", "thread_id": "cx-1"}))
 box = a[a.index("--sandbox") + 1] if "--sandbox" in a else [x for x in a if x.startswith("sandbox_mode=")][0].split('"')[1]
-open(a[a.index("-o") + 1], "w").write("codex says: " + prompt + " sandbox=" + box + " resumed=" + str(sid))
+effort = [x for x in a if x.startswith("model_reasoning_effort=")][0].split('"')[1]
+assert "--ignore-user-config" in a
+if prompt.rstrip().endswith("HARDGPT") and effort != "high":
+    reply = "[[THINK]]"
+else:
+    reply = "codex says: " + prompt + " sandbox=" + box + " resumed=" + str(sid) + " effort=" + effort
+open(a[a.index("-o") + 1], "w").write(reply)
 ''')
 
 cfg = os.path.join(TMP, "config.ini")
@@ -256,6 +266,22 @@ if __name__ == "__main__":
     check("'claude ...' goes to Claude, labeled, with ChatGPT's recent texts as context",
           whole.startswith("(Claude)") and "Earlier in this text conversation" in whole and "plain text now" in whole
           and "open the computer" in whole and "Claude, open" not in whole, whole[:300])
+    def reply_to(text):  # the whole reply, all parts joined (the pretend assistants echo long context)
+        SENT.clear(); BOX.add(gv_mail(MY, text)); time.sleep(4)
+        return " ".join(x[1] for x in SENT[1:])
+    r = reply_to("HARDGPT")
+    check("ChatGPT: light reasoning by default, deep only when it asks ([[THINK]])",
+          r.rstrip().endswith("effort=high") and "[[THINK]]" not in r, r[-120:])
+    r = reply_to("think plan my week")
+    check("'think ...' makes ChatGPT reason hard right away", r.rstrip().endswith("effort=high") and "plan my week" in r, r[-120:])
+    r = reply_to("easy one")
+    check("normal ChatGPT texts stay fast (low)", r.rstrip().endswith("effort=low"), r[-80:])
+    SENT.clear(); BOX.add(gv_mail(MY, "claude HARD claude")); time.sleep(4)
+    check("Claude: Sonnet hands hard questions to Opus ([[OPUS]])",
+          any("answered by opus" in x[1] for x in SENT) and not any("[[OPUS]]" in x[1] for x in SENT), [x[1][-60:] for x in SENT])
+    SENT.clear(); BOX.add(gv_mail(MY, "opus")); s = wait_sent(1)
+    check("'opus' command switches Claude to Opus", s and "Opus" in s[0][1], s)
+    SENT.clear(); BOX.add(gv_mail(MY, "sonnet")); wait_sent(1)
     SENT.clear(); BOX.add(gv_mail(MY, "new")); wait_sent(1)
     SENT.clear(); BOX.add(gv_mail(MY, "fresh start")); s = wait_sent(2)
     check("'new' starts ChatGPT fresh too", any("resumed=None" in x[1] and "Earlier" not in x[1] for x in s), [x[1] for x in s])

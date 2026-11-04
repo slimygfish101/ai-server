@@ -47,6 +47,8 @@ HELP_TEXT = (
     "status = is it busy?\n"
     "more = rest of a long answer\n"
     "claude <message> = ask Claude (it can use the whole computer)\n"
+    "opus / sonnet = Claude always thinks hard / back to fast\n"
+    "think <message> = ChatGPT thinks hard this time\n"
     "chatgpt <message> = ask ChatGPT"
 )
 
@@ -89,6 +91,9 @@ def load_config():
         "fallback_codex": c.get("fallback_codex_script", "").strip(),
         "fallback_sandbox": c.get("fallback_sandbox", "workspace-write").strip(),
         "primary": c.get("primary", "claude").strip().lower(),
+        "hard_model": c.get("hard_model", "opus").strip(),
+        "gpt_effort": c.get("chatgpt_effort", "low").strip(),
+        "gpt_hard_effort": c.get("chatgpt_hard_effort", "high").strip(),
         "send_secret": c.get("send_script_secret", "").strip(),
     }
     missing = [k for k in ("gmail", "app_password", "my_number") if not cfg[k]]
@@ -367,7 +372,10 @@ class Worker(threading.Thread):
     def handle(self, job):
         primary = self.cfg["primary"]
         if job.get("engine") == "codex":
-            answer, err = self.ask_codex(job)
+            answer, err = self.ask_codex(job, effort=self.cfg["gpt_hard_effort"] if job.get("think") else None)
+            if not err and answer and answer.strip() == "[[THINK]]" and not job.get("think"):
+                log.info("ChatGPT asked to think harder")
+                answer, err = self.ask_codex(job, effort=self.cfg["gpt_hard_effort"])
             if self.cancelled:
                 return
             if err:
@@ -384,6 +392,9 @@ class Worker(threading.Thread):
             log.info("resume failed, starting a fresh conversation")
             self.state.data["session_id"] = None
             answer, err = self.ask_claude(job, resume=False)
+        if not err and answer and answer.strip() == "[[OPUS]]" and self.claude_model() != self.cfg["hard_model"]:
+            log.info("Claude asked for the stronger model")
+            answer, err = self.ask_claude(job, resume=True, model=self.cfg["hard_model"])
         if self.cancelled:
             return
         if looks_like_limit(answer if answer is not None else err) and self.cfg["fallback_codex"]:
@@ -458,7 +469,7 @@ class Worker(threading.Thread):
         err = (out_box.get("err") or b"").decode("utf-8", "replace")
         return out, err, None
 
-    def ask_codex(self, job, resume=True):
+    def ask_codex(self, job, resume=True, effort=None):
         """ChatGPT's Codex CLI, kept inside its sandbox (fallback_sandbox, default
         workspace-write: it can only change the texting folder). Continues the saved
         ChatGPT conversation until 'new'."""
@@ -471,13 +482,16 @@ class Worker(threading.Thread):
             pass
         sid = self.state.data.get("codex_session") if resume else None
         base = [c["fallback_node"] or "node", c["fallback_codex"], "exec"]
-        opts = ["-c", f'sandbox_mode="{c["fallback_sandbox"]}"', "--skip-git-repo-check",
-                "--json", "-o", answer_file]
+        effort = effort or c["gpt_effort"]
+        # --ignore-user-config: skip the Codex desktop app's plugins (computer use, browser),
+        # which make every start slower and aren't allowed in the sandboxed texting setup.
+        opts = ["-c", f'sandbox_mode="{c["fallback_sandbox"]}"', "-c", f'model_reasoning_effort="{effort}"',
+                "--ignore-user-config", "--skip-git-repo-check", "--json", "-o", answer_file]
         if sid:
             args = base + ["resume"] + opts + [sid, "-"]
         else:
             args = base + ["--sandbox", c["fallback_sandbox"], "--color", "never", "-C", c["chat_folder"]] + opts + ["-"]
-        log.info("codex start (resume=%s, sandbox=%s) %r", bool(sid), c["fallback_sandbox"], job["text"][:80])
+        log.info("codex start (resume=%s, sandbox=%s, effort=%s) %r", bool(sid), c["fallback_sandbox"], effort, job["text"][:80])
         out, err, problem = self.run_job(args, job, c["chat_folder"])
         if self.cancelled:
             return None, None
@@ -497,18 +511,23 @@ class Worker(threading.Thread):
         if sid and resume:
             log.info("codex resume failed, starting a fresh ChatGPT conversation")
             self.state.data["codex_session"] = None
-            return self.ask_codex(job, resume=False)
+            return self.ask_codex(job, resume=False, effort=effort)
         return None, (err or out).strip()[-300:] or f"no answer (exit code {self.proc.returncode})"
 
-    def ask_claude(self, job, resume):
+    def claude_model(self):
+        """'opus'/'sonnet' texts override config.ini's model until changed again."""
+        return self.state.data.get("claude_model") or self.cfg["model"]
+
+    def ask_claude(self, job, resume, model=None):
         c = self.cfg
         os.makedirs(c["chat_folder"], exist_ok=True)
         args = [c["claude"], "-p", "--output-format", "json"]
         sid = self.state.data.get("session_id")
         if resume and sid:
             args += ["--resume", sid]
-        if c["model"]:
-            args += ["--model", c["model"]]
+        model = model or self.claude_model()
+        if model:
+            args += ["--model", model]
         args += c["claude_args"]
         log.info("claude start (resume=%s) %r", bool(resume and sid), job["text"][:80])
         out, err, problem = self.run_job(args, job, c["chat_folder"])
@@ -709,6 +728,10 @@ class Relay:
             if w.queued():
                 msg += f", {w.queued()} waiting"
             self.sender.text(to, msg + ".", subj)
+        elif cmd in ("opus", "sonnet"):
+            self.state.data["claude_model"] = cmd
+            self.state.save()
+            self.sender.text(to, "OK, Claude will use " + ("Opus (thinks hard every time)." if cmd == "opus" else "Sonnet (fast; switches to Opus on hard questions)."), subj)
         elif cmd == "more":
             self.sender.more(to, subj)
         elif not text.strip():
@@ -720,13 +743,19 @@ class Relay:
                 threading.Thread(target=self.sender._send_one, args=(to, ack, subj), daemon=True).start()
             codex_ok = bool(self.cfg["fallback_codex"])
             engine = "codex" if (self.cfg["primary"] == "chatgpt" and codex_ok) else "claude"
+            think = False
+            m_think = re.match(r"\s*think\b[\s:,-]*", text, re.I)
+            if m_think and text[m_think.end():].strip():
+                think, text = True, text[m_think.end():].strip()
             m_claude = re.match(r"\s*claude\b[\s:,-]*", text, re.I)
             m_gpt = re.match(r"\s*(chatgpt|gpt)\b[\s:,-]*", text, re.I)
             if m_claude:
                 engine, text = "claude", text[m_claude.end():].strip() or "hello"
             elif m_gpt and codex_ok:
                 engine, text = "codex", text[m_gpt.end():].strip() or "hello"
-            self.worker.jobs.put({"text": text, "reply_to": to, "subject": subj, "engine": engine})
+            if think and engine == "claude" and not m_claude:
+                engine = "codex" if codex_ok else "claude"
+            self.worker.jobs.put({"text": text, "reply_to": to, "subject": subj, "engine": engine, "think": think})
 
     def run_forever(self):
         backoff = 5
