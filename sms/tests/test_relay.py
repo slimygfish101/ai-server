@@ -161,6 +161,17 @@ if __name__ == "__main__":
           not signed_with("mx.google.com; dkim=pass header.i=@txt.voice.google.com.evil.example header.s=x"))
     check("signature: other server's header rejected",
           not signed_with("evil.example; dkim=pass header.i=@txt.voice.google.com"))
+    real = (b'Authentication-Results: mx.google.com;\r\n       dkim=pass header.i=@google.com header.s=20260707 header.b=UrQxhSLf;\r\n'
+            b'       spf=pass (google.com: domain of x@grandcentral.bounces.google.com designates 209.85.220.73 as permitted sender);\r\n'
+            b'       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=google.com\r\n'
+            b'Message-ID: <+15550001111.abc@txt.voice.google.com>\r\nSubject: New text message from (718) 555-1234\r\n'
+            b'From: "(718) 555-1234" <15550001111.17185551234.VDBrf6gw-8@txt.voice.google.com>\r\nTo: me@example.com\r\n'
+            b'Content-Type: text/plain; charset="UTF-8"\r\n\r\n\r\n<https://voice.google.com>\r\nTest\r\n'
+            b'YOUR ACCOUNT <https://voice.google.com> HELP CENTER\r\n<https://support.google.com/voice#topic=1707989> HELP FORUM\r\n'
+            b'This email was sent to you because you indicated that you\'d like to receive\r\nemail notifications for text messages.\r\n')
+    info = sms_relay.parse_gv_email(real)
+    check("real Google Voice email (Nov 2026 layout) parsed",
+          info and info["sender"] == "7185551234" and info["text"] == "Test" and info["signed"], info)
     check("signature: failed DKIM rejected",
           not signed_with("mx.google.com; dkim=fail header.i=@txt.voice.google.com"))
     threading.Thread(target=sms_relay.Relay(rcfg).run_forever, daemon=True).start()
