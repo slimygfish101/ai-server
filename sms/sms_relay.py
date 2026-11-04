@@ -83,6 +83,9 @@ def load_config():
         "poll_seconds": c.getfloat("fallback_poll_seconds", 3),
         "require_signature": c.getboolean("require_google_signature", True),
         "send_url": c.get("send_script_url", "").strip(),
+        "fallback_node": c.get("fallback_node", "").strip(),
+        "fallback_codex": c.get("fallback_codex_script", "").strip(),
+        "fallback_sandbox": c.get("fallback_sandbox", "workspace-write").strip(),
         "send_secret": c.get("send_script_secret", "").strip(),
     }
     missing = [k for k in ("gmail", "app_password", "my_number") if not cfg[k]]
@@ -365,24 +368,24 @@ class Worker(threading.Thread):
             answer, err = self.ask_claude(job, resume=False)
         if self.cancelled:
             return
+        if looks_like_limit(answer if answer is not None else err) and self.cfg["fallback_codex"]:
+            log.info("Claude usage limit reached; asking ChatGPT (Codex) instead")
+            answer, err = self.ask_codex(job)
+            if self.cancelled:
+                return
+            if not err:
+                answer = "(ChatGPT answering, Claude limit reached)\n" + answer
+            else:
+                err = "Claude is at its usage limit and ChatGPT also failed: " + err
         if err:
             answer = f"Claude couldn't finish: {err[:300]}\nText 'new' to start fresh if this keeps happening."
         self.sender.text(job["reply_to"], answer, job["subject"])
 
-    def ask_claude(self, job, resume):
-        c = self.cfg
-        os.makedirs(c["chat_folder"], exist_ok=True)
-        args = [c["claude"], "-p", "--output-format", "json"]
-        sid = self.state.data.get("session_id")
-        if resume and sid:
-            args += ["--resume", sid]
-        if c["model"]:
-            args += ["--model", c["model"]]
-        args += c["claude_args"]
+    def run_job(self, args, job, cwd):
+        """Run a helper program with the text on stdin. Returns (out, err, problem)."""
         flags = 0x08000000 if IS_WINDOWS else 0  # CREATE_NO_WINDOW
-        log.info("claude start (resume=%s) %r", bool(resume and sid), job["text"][:80])
         self.proc = subprocess.Popen(
-            args, cwd=c["chat_folder"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            args, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, creationflags=flags,
         )
         out_box = {}
@@ -394,6 +397,7 @@ class Worker(threading.Thread):
         t.start()
         start = time.time()
         warned = False
+        c = self.cfg
         while t.is_alive():
             t.join(2)
             mins = (time.time() - start) / 60
@@ -403,11 +407,55 @@ class Worker(threading.Thread):
             if mins >= c["timeout_min"] and t.is_alive():
                 kill_tree(self.proc)
                 t.join(10)
-                return None, f"took longer than {int(c['timeout_min'])} minutes, so it was stopped"
-        if self.cancelled:
-            return None, None
+                return "", "", f"took longer than {int(c['timeout_min'])} minutes, so it was stopped"
         out = (out_box.get("out") or b"").decode("utf-8", "replace")
         err = (out_box.get("err") or b"").decode("utf-8", "replace")
+        return out, err, None
+
+    def ask_codex(self, job):
+        """Fallback when Claude is at its limit: ChatGPT's Codex CLI, kept inside its sandbox
+        (fallback_sandbox, default workspace-write: it can only change the texting folder).
+        One-off answers, no memory between texts."""
+        c = self.cfg
+        answer_file = os.path.join(c["chat_folder"], ".codex-answer.txt")
+        try:
+            os.remove(answer_file)
+        except OSError:
+            pass
+        args = [c["fallback_node"] or "node", c["fallback_codex"], "exec", "--skip-git-repo-check",
+                "--sandbox", c["fallback_sandbox"], "--color", "never",
+                "-C", c["chat_folder"], "-o", answer_file, "-"]
+        log.info("codex start (sandbox=%s) %r", c["fallback_sandbox"], job["text"][:80])
+        out, err, problem = self.run_job(args, job, c["chat_folder"])
+        if self.cancelled:
+            return None, None
+        if problem:
+            return None, problem
+        try:
+            with open(answer_file, encoding="utf-8") as f:
+                answer = f.read().strip()
+        except OSError:
+            answer = ""
+        if answer:
+            return answer, None
+        return None, (err or out).strip()[-300:] or f"no answer (exit code {self.proc.returncode})"
+
+    def ask_claude(self, job, resume):
+        c = self.cfg
+        os.makedirs(c["chat_folder"], exist_ok=True)
+        args = [c["claude"], "-p", "--output-format", "json"]
+        sid = self.state.data.get("session_id")
+        if resume and sid:
+            args += ["--resume", sid]
+        if c["model"]:
+            args += ["--model", c["model"]]
+        args += c["claude_args"]
+        log.info("claude start (resume=%s) %r", bool(resume and sid), job["text"][:80])
+        out, err, problem = self.run_job(args, job, c["chat_folder"])
+        if problem:
+            return None, problem
+        if self.cancelled:
+            return None, None
         data = None
         for line in reversed(out.strip().splitlines()):
             try:
@@ -434,6 +482,17 @@ class Worker(threading.Thread):
                 return None, "resume_failed"
             return None, result or data.get("subtype") or "error"
         return result, None
+
+
+LIMIT_WORDS = re.compile(
+    r"usage limit|limit reached|hit your (usage |weekly |session )?limit|out of usage|"
+    r"(5-hour|weekly|session) limit|rate limit", re.I)
+
+
+def looks_like_limit(text):
+    """True if Claude's reply is a usage-limit notice rather than a real answer."""
+    t = (text or "").strip()
+    return bool(t) and len(t) < 400 and bool(LIMIT_WORDS.search(t))
 
 
 def kill_tree(p):

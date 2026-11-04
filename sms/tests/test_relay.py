@@ -96,11 +96,23 @@ if prompt.startswith('LONG'):
     out = ' '.join(f'word{{i}}' for i in range(900))
 elif prompt.startswith('SLOW'):
     time.sleep(30); out = 'slow done'
+elif prompt.startswith('LIMIT'):
+    print(json.dumps({{"type":"result","subtype":"success","is_error":True,"result":"Claude AI usage limit reached. Resets Sun 4am","session_id":"sess-1"}}))
+    sys.exit(0)
 else:
     out = f'Echo [{{sid}}]: ' + prompt
 print(json.dumps({{"type":"result","subtype":"success","is_error":False,"result":out,"session_id":"sess-1"}}))
 """)
 os.chmod(claude, os.stat(claude).st_mode | stat.S_IEXEC)
+
+# ---------------- fake codex (run as: python fakecodex.py exec ... -o FILE -) ----------------
+codex = os.path.join(TMP, "fakecodex.py")
+with open(codex, "w") as f:
+    f.write('''import sys
+a = sys.argv[1:]
+prompt = sys.stdin.read()
+open(a[a.index("-o") + 1], "w").write("codex says: " + prompt + " sandbox=" + a[a.index("--sandbox") + 1])
+''')
 
 cfg = os.path.join(TMP, "config.ini")
 with open(cfg, "w") as f:
@@ -119,6 +131,8 @@ chat_folder = {TMP}/chat
 chars_per_text = 300
 max_texts_per_reply = 3
 require_google_signature = false
+fallback_node = {sys.executable}
+fallback_codex_script = {codex}
 """)
 os.environ.update(SMS_RELAY_CONFIG=cfg, SMS_RELAY_STATE=f"{TMP}/state.json", SMS_RELAY_LOG=f"{TMP}/relay.log")
 
@@ -215,6 +229,15 @@ if __name__ == "__main__":
     check("stop kills job", s and s[0][1] == "Stopped.", s)
     time.sleep(2)
     check("no answer after stop", not any("slow done" in x[1] for x in SENT), SENT)
+
+    SENT.clear(); BOX.add(gv_mail(MY, "LIMIT test")); s = wait_sent(2)
+    check("Claude at its limit: ChatGPT answers, still sandboxed",
+          any(x[1].startswith("(ChatGPT answering") and "codex says: LIMIT test" in x[1] and "sandbox=workspace-write" in x[1] for x in s),
+          [x[1] for x in s])
+    check("limit notice detection",
+          sms_relay.looks_like_limit("Claude AI usage limit reached|1793900000")
+          and sms_relay.looks_like_limit("You've hit your weekly limit · resets Sun 4am")
+          and not sms_relay.looks_like_limit("Jerusalem is 7 hours ahead of New York."))
 
     # Replies through the send-as-me script (a pretend one here)
     import http.server
