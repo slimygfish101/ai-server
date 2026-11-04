@@ -216,4 +216,28 @@ if __name__ == "__main__":
     time.sleep(2)
     check("no answer after stop", not any("slow done" in x[1] for x in SENT), SENT)
 
+    # Replies through the send-as-me script (a pretend one here)
+    import http.server
+    POSTS = []
+    class FakeScript(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            POSTS.append(body)
+            ok = body.get("secret") == "s3cret"
+            out = json.dumps({"ok": ok, "left": 99} if ok else {"ok": False, "error": "bad secret"}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(out)
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeScript)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    scfg = dict(rcfg, send_url=f"http://127.0.0.1:{srv.server_port}/exec", send_secret="s3cret")
+    sender = sms_relay.Sender(scfg, sms_relay.State(f"{TMP}/state2.json"))
+    n_smtp = len(SENT)
+    ok = sender._send_one(f"1{GV}.1{MY}.tok@txt.voice.google.com", "hi from script", "Re: x")
+    check("reply goes through send-as-me script, not SMTP",
+          ok and POSTS and POSTS[-1]["body"] == "hi from script" and POSTS[-1]["secret"] == "s3cret" and len(SENT) == n_smtp, POSTS)
+    bad = sms_relay.Sender(dict(scfg, send_secret="wrong"), sender.state)._send_one("x@txt.voice.google.com", "y", "z")
+    check("wrong secret reported as failure", bad is False)
+
     print("\nALL PASSED" if all(results) else "\nSOME FAILED")

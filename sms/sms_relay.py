@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from email.message import EmailMessage
 from email.utils import make_msgid, parseaddr
 
@@ -81,6 +82,8 @@ def load_config():
         "ack": c.getboolean("send_got_it", True),
         "poll_seconds": c.getfloat("fallback_poll_seconds", 3),
         "require_signature": c.getboolean("require_google_signature", True),
+        "send_url": c.get("send_script_url", "").strip(),
+        "send_secret": c.get("send_script_secret", "").strip(),
     }
     missing = [k for k in ("gmail", "app_password", "my_number") if not cfg[k]]
     if missing:
@@ -241,6 +244,8 @@ class Sender:
         self.lock = threading.RLock()
 
     def _send_one(self, to, body, subject):
+        if self.cfg["send_url"]:
+            return self._send_via_script(to, body, subject)
         m = EmailMessage()
         m["From"] = self.cfg["gmail"]
         m["To"] = to
@@ -263,6 +268,14 @@ class Sender:
                 log.exception("send failed (attempt %d)", attempt + 1)
                 time.sleep(3 * (attempt + 1))
         return False
+
+    def _send_via_script(self, to, body, subject):
+        """Send through the send-as-me Google script, so the reply comes from the Gmail
+        that owns Google Voice (Google Voice rejects replies from any other address)."""
+        ok, info = call_send_script(self.cfg, {"to": to, "subject": subject, "body": body})
+        if not ok:
+            log.error("send-as-me script refused or failed: %s", info)
+        return ok
 
     def text(self, to, body, subject="Re: text"):
         """Send an answer as one or more texts; keep overflow for 'more'."""
@@ -289,6 +302,21 @@ class Sender:
                 self.text(to, "Nothing more to send.", subject)
             else:
                 self.text(to, "\n".join(rest), subject)
+
+
+def call_send_script(cfg, payload):
+    """POST to the send-as-me script; returns (ok, info)."""
+    data = json.dumps(dict(payload, secret=cfg["send_secret"])).encode("utf-8")
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(cfg["send_url"], data=data, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                answer = json.loads(resp.read().decode("utf-8") or "{}")
+            return bool(answer.get("ok")), answer
+        except Exception as e:
+            info = repr(e)
+            time.sleep(3 * (attempt + 1))
+    return False, info
 
 
 # ---------------------------------------------------------------- Claude
@@ -613,13 +641,18 @@ def self_test():
     except Exception as e:
         ok = False
         print("Gmail reading: FAILED -", e)
-    try:
-        with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], timeout=30) as s:
-            s.login(cfg["gmail"], cfg["app_password"])
-        print("Gmail sending: OK")
-    except Exception as e:
-        ok = False
-        print("Gmail sending: FAILED -", e)
+    if cfg["send_url"]:
+        sent_ok, info = call_send_script(cfg, {"ping": True})
+        ok = ok and sent_ok
+        print("Sending (send-as-me script):", "OK, emails left today: %s" % info.get("left") if sent_ok else "FAILED - %s" % info)
+    else:
+        try:
+            with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], timeout=30) as s:
+                s.login(cfg["gmail"], cfg["app_password"])
+            print("Gmail sending: OK")
+        except Exception as e:
+            ok = False
+            print("Gmail sending: FAILED -", e)
     try:
         r = subprocess.run([cfg["claude"], "--version"], capture_output=True, text=True, timeout=60)
         print("Claude Code:", "OK " + r.stdout.strip() if r.returncode == 0 else "FAILED " + r.stderr.strip())
