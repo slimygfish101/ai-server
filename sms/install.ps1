@@ -62,9 +62,6 @@ $claude = (Get-Command claude.exe -ErrorAction SilentlyContinue).Source
 if (-not $claude) { $claude = "$env:USERPROFILE\.local\bin\claude.exe" }
 Write-Host "Claude Code: $claude"
 
-# Codex (the ChatGPT fallback) reads AGENTS.md; give it the same texting rules
-Copy-Item "$Sms\chat\CLAUDE.md" "$Sms\chat\AGENTS.md" -Force
-
 # 3. Settings file (you fill in the password yourself; it never goes in a chat)
 if (-not (Test-Path "$Sms\config.ini")) {
     Copy-Item "$Sms\config.example.ini" "$Sms\config.ini"

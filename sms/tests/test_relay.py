@@ -108,10 +108,16 @@ os.chmod(claude, os.stat(claude).st_mode | stat.S_IEXEC)
 # ---------------- fake codex (run as: python fakecodex.py exec ... -o FILE -) ----------------
 codex = os.path.join(TMP, "fakecodex.py")
 with open(codex, "w") as f:
-    f.write('''import sys
+    f.write('''import sys, json
 a = sys.argv[1:]
 prompt = sys.stdin.read()
-open(a[a.index("-o") + 1], "w").write("codex says: " + prompt + " sandbox=" + a[a.index("--sandbox") + 1])
+if "resume" in a:
+    sid = a[-2]
+else:
+    sid = None
+    print(json.dumps({"type": "thread.started", "thread_id": "cx-1"}))
+box = a[a.index("--sandbox") + 1] if "--sandbox" in a else [x for x in a if x.startswith("sandbox_mode=")][0].split('"')[1]
+open(a[a.index("-o") + 1], "w").write("codex says: " + prompt + " sandbox=" + box + " resumed=" + str(sid))
 ''')
 
 cfg = os.path.join(TMP, "config.ini")
@@ -230,13 +236,30 @@ if __name__ == "__main__":
     time.sleep(2)
     check("no answer after stop", not any("slow done" in x[1] for x in SENT), SENT)
 
+    BOX.add(gv_mail(MY, "new")); time.sleep(1.5)  # the pretend ChatGPT echoes its whole input; start clean
     SENT.clear(); BOX.add(gv_mail(MY, "LIMIT test")); s = wait_sent(2)
     check("Claude at its limit: ChatGPT answers, still sandboxed",
-          any(x[1].startswith("(ChatGPT answering") and "codex says: LIMIT test" in x[1] and "sandbox=workspace-write" in x[1] for x in s),
+          any(x[1].startswith("(ChatGPT answering") and "LIMIT test" in x[1] and "sandbox=workspace-write" in x[1] for x in s),
           [x[1] for x in s])
     SENT.clear(); BOX.add(gv_mail(MY, "chatgpt: capital of France?")); s = wait_sent(2)
     check("'chatgpt ...' goes straight to ChatGPT",
-          any(x[1].startswith("(ChatGPT)") and "codex says: capital of France?" in x[1] for x in s), [x[1] for x in s])
+          any(x[1].startswith("(ChatGPT)") and "capital of France?" in x[1] for x in s), [x[1] for x in s])
+    SENT.clear(); BOX.add(gv_mail(MY, "chatgpt and Spain?")); s = wait_sent(2)
+    check("ChatGPT remembers (continues its conversation)", any("resumed=cx-1" in x[1] and "sandbox=workspace-write" in x[1] for x in s), [x[1] for x in s])
+
+    rcfg["primary"] = "chatgpt"
+    SENT.clear(); BOX.add(gv_mail(MY, "plain text now")); s = wait_sent(2)
+    check("ChatGPT is the main one: plain text goes to ChatGPT, unlabeled",
+          any(x[1].startswith("codex says:") and "plain text now" in x[1] for x in s), [x[1] for x in s])
+    SENT.clear(); BOX.add(gv_mail(MY, "Claude, open the computer")); time.sleep(4)
+    whole = " ".join(re.sub(r"^\(\d+/\d+\) ", "", x[1]) for x in SENT[1:])
+    check("'claude ...' goes to Claude, labeled, with ChatGPT's recent texts as context",
+          whole.startswith("(Claude)") and "Earlier in this text conversation" in whole and "plain text now" in whole
+          and "open the computer" in whole and "Claude, open" not in whole, whole[:300])
+    SENT.clear(); BOX.add(gv_mail(MY, "new")); wait_sent(1)
+    SENT.clear(); BOX.add(gv_mail(MY, "fresh start")); s = wait_sent(2)
+    check("'new' starts ChatGPT fresh too", any("resumed=None" in x[1] and "Earlier" not in x[1] for x in s), [x[1] for x in s])
+    rcfg["primary"] = "claude"
     check("limit notice detection",
           sms_relay.looks_like_limit("Claude AI usage limit reached|1793900000")
           and sms_relay.looks_like_limit("You've hit your weekly limit · resets Sun 4am")

@@ -46,7 +46,8 @@ HELP_TEXT = (
     "stop = cancel the current job\n"
     "status = is it busy?\n"
     "more = rest of a long answer\n"
-    "chatgpt <question> = ask ChatGPT instead of Claude"
+    "claude <message> = ask Claude (it can use the whole computer)\n"
+    "chatgpt <message> = ask ChatGPT"
 )
 
 
@@ -87,6 +88,7 @@ def load_config():
         "fallback_node": c.get("fallback_node", "").strip(),
         "fallback_codex": c.get("fallback_codex_script", "").strip(),
         "fallback_sandbox": c.get("fallback_sandbox", "workspace-write").strip(),
+        "primary": c.get("primary", "claude").strip().lower(),
         "send_secret": c.get("send_script_secret", "").strip(),
     }
     missing = [k for k in ("gmail", "app_password", "my_number") if not cfg[k]]
@@ -116,7 +118,8 @@ class State:
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
-        self.data = {"session_id": None, "seen": [], "more": [], "more_to": None}
+        self.data = {"session_id": None, "codex_session": None, "history": [],
+                     "seen": [], "more": [], "more_to": None}
         self.first_run = not os.path.exists(path)
         if not self.first_run:
             try:
@@ -362,14 +365,20 @@ class Worker(threading.Thread):
                 self.busy, self.proc = False, None
 
     def handle(self, job):
-        if job.get("codex"):  # texted "chatgpt ...": ask ChatGPT directly
+        primary = self.cfg["primary"]
+        if job.get("engine") == "codex":
             answer, err = self.ask_codex(job)
             if self.cancelled:
                 return
             if err:
-                answer = f"ChatGPT couldn't finish: {err[:300]}"
-            self.sender.text(job["reply_to"], "(ChatGPT)\n" + answer if not err else answer, job["subject"])
+                answer = f"ChatGPT couldn't finish: {err[:300]}\nStart your text with 'claude' to ask Claude instead."
+            else:
+                self.remember("chatgpt", job, answer)
+                if primary != "chatgpt":
+                    answer = "(ChatGPT)\n" + answer
+            self.sender.text(job["reply_to"], answer, job["subject"])
             return
+        job["prompt"] = self.with_context("claude", job["text"])
         answer, err = self.ask_claude(job, resume=True)
         if err == "resume_failed":
             log.info("resume failed, starting a fresh conversation")
@@ -383,12 +392,40 @@ class Worker(threading.Thread):
             if self.cancelled:
                 return
             if not err:
+                self.remember("chatgpt", job, answer)
                 answer = "(ChatGPT answering, Claude limit reached)\n" + answer
             else:
                 err = "Claude is at its usage limit and ChatGPT also failed: " + err
+        elif not err:
+            self.remember("claude", job, answer)
+            if primary == "chatgpt":
+                answer = "(Claude)\n" + answer
         if err:
             answer = f"Claude couldn't finish: {err[:300]}\nText 'new' to start fresh if this keeps happening."
         self.sender.text(job["reply_to"], answer, job["subject"])
+
+    # ---- shared memory between Claude and ChatGPT
+    def remember(self, engine, job, answer):
+        h = self.state.data.setdefault("history", [])
+        h.append({"engine": engine, "q": job["text"][:1500], "a": (answer or "")[:1500]})
+        self.state.data["history"] = h[-30:]
+        self.state.save()
+
+    def with_context(self, engine, text):
+        """Prefix the texts the other assistant handled since this one last answered,
+        so switching between Claude and ChatGPT doesn't lose the thread."""
+        unseen = []
+        for item in reversed(self.state.data.get("history") or []):
+            if item["engine"] == engine:
+                break
+            unseen.append(item)
+        if not unseen:
+            return text
+        lines = ["Earlier in this text conversation (answered by the other assistant), for context:"]
+        for item in reversed(unseen[:6]):
+            lines.append("Lipa: " + item["q"])
+            lines.append("Answer: " + item["a"][:800])
+        return "\n".join(lines) + "\n\nLipa's new text:\n" + text
 
     def run_job(self, args, job, cwd):
         """Run a helper program with the text on stdin. Returns (out, err, problem)."""
@@ -400,7 +437,7 @@ class Worker(threading.Thread):
         out_box = {}
 
         def comm():
-            out_box["out"], out_box["err"] = self.proc.communicate(job["text"].encode("utf-8"))
+            out_box["out"], out_box["err"] = self.proc.communicate(job.get("prompt", job["text"]).encode("utf-8"))
 
         t = threading.Thread(target=comm, daemon=True)
         t.start()
@@ -421,25 +458,35 @@ class Worker(threading.Thread):
         err = (out_box.get("err") or b"").decode("utf-8", "replace")
         return out, err, None
 
-    def ask_codex(self, job):
-        """Fallback when Claude is at its limit: ChatGPT's Codex CLI, kept inside its sandbox
-        (fallback_sandbox, default workspace-write: it can only change the texting folder).
-        One-off answers, no memory between texts."""
+    def ask_codex(self, job, resume=True):
+        """ChatGPT's Codex CLI, kept inside its sandbox (fallback_sandbox, default
+        workspace-write: it can only change the texting folder). Continues the saved
+        ChatGPT conversation until 'new'."""
         c = self.cfg
+        job["prompt"] = self.with_context("chatgpt", job["text"])
         answer_file = os.path.join(c["chat_folder"], ".codex-answer.txt")
         try:
             os.remove(answer_file)
         except OSError:
             pass
-        args = [c["fallback_node"] or "node", c["fallback_codex"], "exec", "--skip-git-repo-check",
-                "--sandbox", c["fallback_sandbox"], "--color", "never",
-                "-C", c["chat_folder"], "-o", answer_file, "-"]
-        log.info("codex start (sandbox=%s) %r", c["fallback_sandbox"], job["text"][:80])
+        sid = self.state.data.get("codex_session") if resume else None
+        base = [c["fallback_node"] or "node", c["fallback_codex"], "exec"]
+        opts = ["-c", f'sandbox_mode="{c["fallback_sandbox"]}"', "--skip-git-repo-check",
+                "--json", "-o", answer_file]
+        if sid:
+            args = base + ["resume"] + opts + [sid, "-"]
+        else:
+            args = base + ["--sandbox", c["fallback_sandbox"], "--color", "never", "-C", c["chat_folder"]] + opts + ["-"]
+        log.info("codex start (resume=%s, sandbox=%s) %r", bool(sid), c["fallback_sandbox"], job["text"][:80])
         out, err, problem = self.run_job(args, job, c["chat_folder"])
         if self.cancelled:
             return None, None
         if problem:
             return None, problem
+        new_id = codex_thread_id(out)
+        if new_id and new_id != sid:
+            self.state.data["codex_session"] = new_id
+            self.state.save()
         try:
             with open(answer_file, encoding="utf-8") as f:
                 answer = f.read().strip()
@@ -447,6 +494,10 @@ class Worker(threading.Thread):
             answer = ""
         if answer:
             return answer, None
+        if sid and resume:
+            log.info("codex resume failed, starting a fresh ChatGPT conversation")
+            self.state.data["codex_session"] = None
+            return self.ask_codex(job, resume=False)
         return None, (err or out).strip()[-300:] or f"no answer (exit code {self.proc.returncode})"
 
     def ask_claude(self, job, resume):
@@ -491,6 +542,21 @@ class Worker(threading.Thread):
                 return None, "resume_failed"
             return None, result or data.get("subtype") or "error"
         return result, None
+
+
+def codex_thread_id(out):
+    """Find the conversation id in Codex's --json event stream."""
+    for line in out.splitlines():
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        for d in (ev, ev.get("msg") if isinstance(ev, dict) else None):
+            if isinstance(d, dict):
+                for key in ("thread_id", "session_id", "conversation_id"):
+                    if isinstance(d.get(key), str) and d[key]:
+                        return d[key]
+    return None
 
 
 LIMIT_WORDS = re.compile(
@@ -631,7 +697,7 @@ class Relay:
             self.sender.text(to, HELP_TEXT, subj)
         elif cmd == "new":
             self.worker.stop_current()
-            self.state.data["session_id"] = None
+            self.state.data.update(session_id=None, codex_session=None, history=[])
             self.state.save()
             self.sender.text(to, "OK, fresh conversation. What do you need?", subj)
         elif cmd in ("stop", "cancel"):
@@ -652,11 +718,15 @@ class Relay:
             if self.cfg["ack"]:
                 ack = "Got it, working on it." if not ahead else f"Got it. Starting after {ahead} job(s) ahead of it."
                 threading.Thread(target=self.sender._send_one, args=(to, ack, subj), daemon=True).start()
-            job = {"text": text, "reply_to": to, "subject": subj}
-            m = re.match(r"\s*(chatgpt|gpt)\b[\s:,-]*", text, re.I)
-            if m and self.cfg["fallback_codex"]:
-                job.update(text=text[m.end():].strip() or "hello", codex=True)
-            self.worker.jobs.put(job)
+            codex_ok = bool(self.cfg["fallback_codex"])
+            engine = "codex" if (self.cfg["primary"] == "chatgpt" and codex_ok) else "claude"
+            m_claude = re.match(r"\s*claude\b[\s:,-]*", text, re.I)
+            m_gpt = re.match(r"\s*(chatgpt|gpt)\b[\s:,-]*", text, re.I)
+            if m_claude:
+                engine, text = "claude", text[m_claude.end():].strip() or "hello"
+            elif m_gpt and codex_ok:
+                engine, text = "codex", text[m_gpt.end():].strip() or "hello"
+            self.worker.jobs.put({"text": text, "reply_to": to, "subject": subj, "engine": engine})
 
     def run_forever(self):
         backoff = 5
