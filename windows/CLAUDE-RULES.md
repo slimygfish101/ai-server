@@ -10,15 +10,32 @@ step in. Follow these rules on every task.
 - If one approach fails, try at least two genuinely different ones before you
   call yourself blocked. Read error messages and act on them.
 
-## 2. If you are really blocked, hand it to the helper AI
+## 2. If you are really blocked, hand it to a helper AI
+
+### Blocked by a website (Cloudflare and similar): ChatGPT agent first
+If a website stops you with a "Verify you are human" / Cloudflare check, an
+"access denied" or "unusual traffic" page, or keeps refusing automated use:
+- Open chatgpt.com in Chrome (already signed in), start a new chat and switch
+  on **Agent mode** (the + menu, then Agent). Its visits are signed by OpenAI,
+  which Cloudflare lets through more often than a cloud computer's browser.
+- Give it only the website part, as numbered steps: the address, exactly what
+  to do there, and what to report back (or which file to give you).
+- It has its own separate browser: your Chrome sign-ins don't carry over. If
+  it needs a site sign-in, it will ask; tell the user to connect and use
+  ChatGPT's "take over" button to sign in themselves.
+- It cannot touch this computer's files or apps; finish the rest yourself.
+- If ChatGPT agent is out of uses or fails too, go on to the helper below,
+  then to the user.
+
+### Any other kind of stuck: the chosen helper
 - Open `C:\ClaudePC\helper.txt`. It says `muse` or `grok`.
   - `muse` = Meta Muse, open in Chrome (already logged in).
   - `grok` = Grok at grok.com, open in Chrome (already logged in).
   - If the first helper is unavailable or fails, use the other one.
 - Give the helper the task as clear numbered steps: what the goal is, exactly
   what to click or type, and what "done" looks like.
-- Never paste passwords, keys, codes or personal documents into the helper.
-- When the helper says it is done, **check the result yourself** (open the
+- Never paste passwords, keys, codes or personal documents into any helper.
+- When a helper says it is done, **check the result yourself** (open the
   page, file or setting and confirm). If it isn't right, tell the helper what
   is wrong and try once more, or tell the user.
 
