@@ -303,6 +303,7 @@ class Sender:
                 self._send_one(to, label + p, subject)
                 if i < total:
                     time.sleep(1.5)  # keep order on the phone
+            log.info("reply sent: %d text(s)%s", total, ", rest waiting for 'more'" if later else "")
             self.state.data["more"] = later
             self.state.data["more_to"] = to if later else None
             self.state.save()
@@ -655,13 +656,13 @@ class Inbox:
             return
         M = self.M
         if hasattr(M, "idle"):  # Python 3.14+: built-in, fully reliable
-            with M.idle(duration=seconds or 540) as idler:
+            with M.idle(duration=seconds or 60) as idler:  # short cycles: a silently dead connection costs at most ~1 min
                 for typ, _ in idler:
                     if typ in ("EXISTS", "RECENT"):
                         break
             return
         # Older Python: do IDLE by hand. Short cycles bound any rare missed wake-up.
-        seconds = seconds or 120
+        seconds = seconds or 60
         tag = M._new_tag()
         M.send(tag + b" IDLE\r\n")
         first = M.readline()
