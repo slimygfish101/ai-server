@@ -656,13 +656,13 @@ class Inbox:
             return
         M = self.M
         if hasattr(M, "idle"):  # Python 3.14+: built-in, fully reliable
-            with M.idle(duration=seconds or 60) as idler:  # short cycles: a silently dead connection costs at most ~1 min
+            with M.idle(duration=seconds or 20) as idler:  # short cycles: a silently dead connection costs at most ~20 s
                 for typ, _ in idler:
                     if typ in ("EXISTS", "RECENT"):
                         break
             return
         # Older Python: do IDLE by hand. Short cycles bound any rare missed wake-up.
-        seconds = seconds or 60
+        seconds = seconds or 20
         tag = M._new_tag()
         M.send(tag + b" IDLE\r\n")
         first = M.readline()
