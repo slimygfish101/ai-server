@@ -58,7 +58,7 @@ def digits10(s):
 
 def load_config():
     cp = configparser.ConfigParser(interpolation=None)
-    if not cp.read(CFG_PATH, encoding="utf-8"):
+    if not cp.read(CFG_PATH, encoding="utf-8-sig"):  # utf-8-sig: Windows tools may add a BOM
         raise SystemExit(f"Config file not found: {CFG_PATH}")
     c = cp["relay"]
     cfg = {
