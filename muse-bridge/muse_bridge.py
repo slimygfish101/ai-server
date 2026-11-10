@@ -182,6 +182,10 @@ def has_tag(subject, tag):
     return tag in (subject or "").lower()
 
 
+def gmail_id_of(msg):
+    return getattr(msg, "gmail_id", None) or str(msg.get("Message-ID", "")).strip() or "unknown"
+
+
 def format_for_muse(msg, cfg):
     senders = getaddresses([str(msg.get("From", ""))])
     name, addr = senders[0] if senders else ("", "")
@@ -193,6 +197,7 @@ def format_for_muse(msg, cfg):
     files = attachment_names(msg)
     return "\n".join([
         HEADER,
+        f"Gmail ID: {gmail_id_of(msg)}",
         f"From: {sender}",
         f"Subject: {subject_of(msg)}",
         f"Received: {received_ny(msg, cfg['timezone'])}",
@@ -223,10 +228,7 @@ class Gmail:
         caps = b" ".join(x if isinstance(x, bytes) else x.encode() for x in self.M.capabilities)
         self.idle_ok = b"IDLE" in caps
         if c["gmail_labels"]:
-            try:
-                self.M.create(c["label"])  # harmless if it already exists
-            except Exception:
-                pass
+            self.ensure_label()
         st = self.state.data
         if st["last_uid"] is None or st["uidvalidity"] != uv:
             # First start (or Gmail renumbered): only emails arriving from now on count.
@@ -235,10 +237,28 @@ class Gmail:
             log.info("first start: emails already in the inbox are left alone")
         log.info("Gmail connected (instant notices: %s)", self.idle_ok)
 
+    def ensure_label(self):
+        """Create the MUSE-HANDLED label in Gmail if it isn't there yet (Gmail labels are IMAP folders)."""
+        label = self.cfg["label"]
+        typ, d = self.M.list('""', label)
+        if typ == "OK" and d and d[0]:
+            return
+        typ, d = self.M.create(label)
+        if typ == "OK":
+            log.info("created the Gmail label %s", label)
+        else:
+            log.warning("couldn't create the Gmail label %s: %r", label, d)
+
     def _fetch(self, uid):
-        typ, d = self.M.uid("fetch", str(uid), "(BODY.PEEK[])")
-        raw = next((x[1] for x in d if isinstance(x, tuple)), None)
-        return email.message_from_bytes(raw, policy=email.policy.default) if raw else None
+        typ, d = self.M.uid("fetch", str(uid), "(X-GM-MSGID BODY.PEEK[])")
+        item = next((x for x in d if isinstance(x, tuple)), None)
+        if not item:
+            return None
+        msg = email.message_from_bytes(item[1], policy=email.policy.default)
+        # Gmail's own message ID (the hex id Gmail shows in links and its API)
+        m = re.search(rb"X-GM-MSGID (\d+)", item[0])
+        msg.gmail_id = format(int(m.group(1)), "x") if m else None
+        return msg
 
     def _labels(self, uid):
         if not self.cfg["gmail_labels"]:
@@ -389,7 +409,7 @@ class Muse:
         page = self.page
         page.goto(self.cfg["muse_url"], wait_until="domcontentloaded", timeout=60000)
         box = self._message_box()
-        marker = text.split("\n")[2][:80]  # the "Subject: ..." line
+        marker = text.split("\n")[1][:80]  # the "Gmail ID: ..." line, unique to each email
         before = page.get_by_text(marker, exact=False).count()
         box.click()
         box.fill(text)
