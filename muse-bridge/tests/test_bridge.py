@@ -29,6 +29,8 @@ SMTP_PORT={SMTP_PORT}
 SMTP_SSL=false
 MUSE_URL=http://127.0.0.1:{WEB_PORT}/
 BROWSER_CHANNEL=
+CONFIRM_SECONDS=4
+HISTORY_WAIT_MS=500
 """)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import muse_bridge as mb  # noqa: E402
@@ -143,16 +145,23 @@ CHAT = b"""<!doctype html><html><body>
 <textarea id="box" placeholder="Message" rows="3"></textarea><button id="send" aria-label="Send">&#10148;</button></div>
 <script>
 mc.onclick = () => { chat.style.display = 'block'; };
-send.onclick = () => { const t = box.value; if (!t.trim()) return;
-  const d = document.createElement('pre'); d.textContent = t; msgs.appendChild(d); box.value = '';
-  fetch('/sent', {method: 'POST', body: t}); };
+send.onclick = () => { const t = box.value; if (!t.trim()) return; box.value = '';
+  fetch('/sent', {method: 'POST', body: t});
+  const show = () => { const d = document.createElement('pre'); d.textContent = t; msgs.appendChild(d); };
+  if (SLOW) setTimeout(show, 8000); else show(); };
 </script></body></html>"""
 LOGGED_OUT = b"<!doctype html><html><body><h1>Welcome to Muse</h1><button>Log in</button> <button>Sign up</button></body></html>"
 
 
 class Web(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        page = CHAT if MODE["page"] == "chat" else LOGGED_OUT
+        import html as h
+        if MODE["page"] == "chat":  # the chat shows earlier messages, like a real chat history
+            history = "".join(f"<pre>{h.escape(t)}</pre>" for t in POSTED).encode()
+            page = (CHAT.replace(b'<div id="msgs"></div>', b'<div id="msgs">' + history + b"</div>")
+                    .replace(b"<script>", b"<script>const SLOW = " + (b"true" if MODE.get("slow") else b"false") + b";\n"))
+        else:
+            page = LOGGED_OUT
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -262,6 +271,17 @@ if __name__ == "__main__":
     check("sent automatically once Muse is back", wait_for(lambda: len(POSTED) == 3, 60) and "while logged out" in POSTED[-1], len(POSTED))
     time.sleep(3)
     check("still only once each", len(POSTED) == 3, len(POSTED))
+
+    # --- Muse slow to show a sent message: no duplicate on retry
+    MODE["slow"] = True
+    add_mail("@muse4215 slow muse", "hi test real please respond")
+    wait_for(lambda: len(POSTED) == 4, 30)
+    time.sleep(45)  # first try times out (4 s), the retry 30 s later must find it already in the chat
+    check("slow Muse: delivered once, retry sees it and doesn't paste again", len(POSTED) == 4, len(POSTED))
+    check("slow Muse: still labeled and recorded", "MUSE-HANDLED" in MSGS[-1][2], MSGS[-1][2])
+    check("slow Muse: a picture of the page was saved for diagnosis",
+          os.path.isdir(os.path.join(os.path.dirname(mb.__file__), "debug")))
+    MODE["slow"] = False
 
     print("\nALL PASSED" if all(results) else "\nSOME FAILED")
     os._exit(0 if all(results) else 1)

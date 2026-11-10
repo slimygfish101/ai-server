@@ -67,6 +67,8 @@ def load_env(path=ENV_PATH):
         "label": get("GMAIL_LABEL", "MUSE-HANDLED"),
         "max_body": int(get("MAX_BODY_CHARS", "3000")),
         "timezone": get("TIMEZONE", "America/New_York"),
+        "confirm_seconds": float(get("CONFIRM_SECONDS", "45")),
+        "history_wait_ms": int(get("HISTORY_WAIT_MS", "3000")),
         "gmail_labels": get("GMAIL_LABELS", "true").lower() != "false",  # off only for tests
     }
 
@@ -394,7 +396,9 @@ class Muse:
             page.wait_for_timeout(500)
         body = (page.inner_text("body") or "").lower()
         if re.search(r"\b(log ?in|sign ?in|sign up|continue with google)\b", body):
-            raise MuseError("logged_out", "Muse looks logged out (its sign-in page is showing).")
+            self.save_debug("logged-out")
+        raise MuseError("logged_out", "Muse looks logged out (its sign-in page is showing).")
+        self.save_debug("no-box")
         raise MuseError("no_box", "Could not find Muse's message box (placeholder 'Message').")
 
     def _box_text(self, box):
@@ -404,13 +408,18 @@ class Muse:
             return box.inner_text()
 
     def send(self, text):
+        """Paste one email into the Muse chat. Returns 'sent' or 'already' (found in the chat already)."""
         if self.page is None:
             self.start()
         page = self.page
         page.goto(self.cfg["muse_url"], wait_until="domcontentloaded", timeout=60000)
         box = self._message_box()
         marker = text.split("\n")[1][:80]  # the "Gmail ID: ..." line, unique to each email
-        before = page.get_by_text(marker, exact=False).count()
+        shown = lambda: page.get_by_text(marker, exact=False).count()
+        page.wait_for_timeout(self.cfg["history_wait_ms"])  # let the chat history load
+        if shown():
+            log.info("already in the Muse chat (earlier try went through): %s", marker)
+            return "already"
         box.click()
         box.fill(text)
         send_btn = page.get_by_role("button", name=re.compile(r"^\s*send\b", re.I))
@@ -418,12 +427,27 @@ class Muse:
             send_btn.first.click()
         else:
             box.press("Enter")
-        deadline = time.time() + 20
+        deadline = time.time() + self.cfg["confirm_seconds"]
         while time.time() < deadline:
-            if page.get_by_text(marker, exact=False).count() > before and not self._box_text(box).strip():
-                return
+            # sent = the message box emptied and the email's Gmail ID line now shows in the chat
+            if not self._box_text(box).strip() and shown():
+                return "sent"
             page.wait_for_timeout(500)
+        self.save_debug("not-sent")
         raise MuseError("not_sent", "Typed the email into Muse, but couldn't confirm it was sent.")
+
+    def save_debug(self, why):
+        """Keep a picture and copy of the Muse page when something goes wrong (debug folder)."""
+        try:
+            d = os.path.join(BASE, "debug")
+            os.makedirs(d, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.page.screenshot(path=os.path.join(d, f"{stamp}-{why}.png"), full_page=True)
+            with open(os.path.join(d, f"{stamp}-{why}.html"), "w", encoding="utf-8") as f:
+                f.write(self.page.content())
+            log.info("saved a picture of the Muse page in %s", d)
+        except Exception:
+            log.exception("couldn't save the debug picture")
 
     def check(self):
         if self.page is None:
@@ -476,7 +500,7 @@ def process(gmail, muse, state, alerts, cfg):
     for uid, mid, msg in gmail.new_emails():
         text = format_for_muse(msg, cfg)
         try:
-            muse.send(text)
+            how = muse.send(text)
         except MuseError as e:
             alerts.problem(e.kind, f"{e} Email waiting: \"{subject_of(msg)}\". It will be retried.")
             return False
@@ -487,7 +511,8 @@ def process(gmail, muse, state, alerts, cfg):
             return False
         gmail.add_label(uid)
         state.mark(mid)
-        log.info("sent to Muse and labeled %s: %r", cfg["label"], subject_of(msg))
+        log.info("%s and labeled %s: %r", "sent to Muse" if how == "sent" else "was already in Muse",
+                 cfg["label"], subject_of(msg))
     return True
 
 
